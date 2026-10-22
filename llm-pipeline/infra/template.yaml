@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: SEC filing KPI extraction pipeline (S3 + Lambda + Claude API)
+
+Parameters:
+  AnthropicApiKeySecretArn:
+    Type: String
+    Description: Secrets Manager ARN holding the Anthropic API key (plain string or {"ANTHROPIC_API_KEY":"..."})
+  SecUserAgent:
+    Type: String
+    Description: SEC-required User-Agent, e.g. "Your Name you@example.com"
+  AnthropicModel:
+    Type: String
+    Default: claude-sonnet-5-5
+  Tickers:
+    Type: String
+    Default: AAPL,MSFT
+    Description: Comma-separated tickers for the scheduled ingest
+
+Globals:
+  Function:
+    Runtime: python3.12
+    CodeUri: ../src
+    Timeout: 900
+    MemorySize: 1024
+    Environment:
+      Variables:
+        # Explicit name (not !Ref) avoids the bucket <-> notification circular dependency.
+        BUCKET_NAME: !Sub "${AWS::StackName}-${AWS::AccountId}-filings"
+        ANTHROPIC_API_KEY_SECRET_ARN: !Ref AnthropicApiKeySecretArn
+        ANTHROPIC_MODEL: !Ref AnthropicModel
+        SEC_USER_AGENT: !Ref SecUserAgent
+
+Resources:
+  FilingsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-${AWS::AccountId}-filings"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ProcessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: kpi_pipeline.lambda_handler.process_handler
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Sub "${AWS::StackName}-${AWS::AccountId}-filings"
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref AnthropicApiKeySecretArn
+      Events:
+        NewFiling:
+          Type: S3
+          Properties:
+            Bucket: !Ref FilingsBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - { Name: prefix, Value: filings/raw/ }
+                  - { Name: suffix, Value: .htm }
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: kpi_pipeline.lambda_handler.ingest_handler
+      Timeout: 300
+      Environment:
+        Variables:
+          TICKERS: !Ref Tickers
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Sub "${AWS::StackName}-${AWS::AccountId}-filings"
+      Events:
+        Daily:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 12 * * ? *)
+            Input: '{"form": "10-Q"}'
+
+Outputs:
+  BucketName:
+    Value: !Ref FilingsBucket
+  ProcessFunctionArn:
+    Value: !GetAtt ProcessFunction.Arn

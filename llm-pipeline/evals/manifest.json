@@ -1,0 +1,7 @@
+[
+  {"ticker": "AAPL", "form": "10-Q"},
+  {"ticker": "MSFT", "form": "10-Q"},
+  {"ticker": "NVDA", "form": "10-Q"},
+  {"ticker": "JPM", "form": "10-Q"},
+  {"ticker": "KO", "form": "10-K"}
+]
